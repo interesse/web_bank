@@ -19,11 +19,15 @@ gebraucht), dafür wird jetzt exportiertes CSV ausgewertet, das nicht auf eine
 Seite Ausgabe beschränkt ist. Da kein HTML mehr geparsed wird, entfällt auch die
 Abhängigkeit zu tidy und xpath.
 
+27.12.2009: Auswahl der Kartennummer
+
 23.11.2011: Fix des Session-Handlings durch eine Änderung der DKB
 
 Benutzung: web_bank.py [OPTIONEN]
 
  -a, --account=ACCOUNT      Kontonummer des Hauptkontos. Angabe notwendig
+ -c, --card=NUMBER          Die letzten 4 Stellen der Kartennummer, falls 
+                            mehrere Karten vorhanden sind.
  -p, --password=PASSWORD    Passwort (Benutzung nicht empfohlen, 
                             geben Sie das Passwort ein, wenn Sie danach
                             gefragt werden)
@@ -41,7 +45,7 @@ from getpass import getpass
 import urllib2, urllib, re
 
 def group(lst, n):
-    return zip(*[lst[i::n] for i in range(n)])
+	return zip(*[lst[i::n] for i in range(n)])
     
 debug=False
 def log(msg):
@@ -57,8 +61,17 @@ class NewParser:
 	PLUSMINUS = 'frmSollHabenKennzeichen'
 	MINUS_CHAR='S'
 	DATUM = 'frmBelegdatum'
+	
+	def get_cc_index(self, card, data):
+		log('Finde Kreditkartenindex für Karte ***%s...'%card)
+		pattern= r'<option value="(.)" id=".*"( selected="selected" )?>.{12}%s / Kreditkarte'%card
+		index= re.findall(pattern, data)
+		if len(index)>0:
+			return index[0][0]
+		else:
+			return '0'
 
-	def get_cc_csv(self, account, password, fromdate, till):
+	def get_cc_csv(self, account, card, password, fromdate, till):
 		log('Hole sessionID und Token...')
 		# retrieve sessionid and token
 		url= self.URL+"/dkb/-?$javascript=disabled"
@@ -68,15 +81,14 @@ class NewParser:
 		log('SessionID: %s Token: %s'%(session,token))
 		# login
 		url= self.URL+'/dkb/-'+session
-		log('URL: '+url)
 		request=urllib2.Request(url, data= urllib.urlencode({
-															'$$event_login.x': '0',
-															'$$event_login.y': '0',
-															'token': token,
-															'j_username': account,
-															'j_password': password,
-															'$part': 'Welcome.login',
-															'$$$event_login': 'login',
+		                                                     '$$event_login.x': '0',
+		                                                     '$$event_login.y': '0',
+		                                                     'token': token,
+		                                                     'j_username': account,
+		                                                     'j_password': password,
+		                                                     '$part': 'Welcome.login',
+		                                                     '$$$event_login': 'login',
 		}))
 		page=urllib2.urlopen(request).read()
 
@@ -87,24 +99,42 @@ class NewParser:
 
 		# init search
 		request=urllib2.Request(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=init',
-			headers={'Referer':urllib.quote_plus(referer)})
+		                        headers={'Referer':urllib.quote_plus(referer)})
 		throwaway=urllib2.urlopen(request).read()
 		referer = url
 
 		# retrieve data
 		request=urllib2.Request(url, data= urllib.urlencode({
-															'slCreditCard': '0',
-															'searchPeriod': '0',
-															'postingDate': fromdate,
-															'toPostingDate': till,
-															'$$event_search': 'Umsätze+anzeigen',
-															'$part': 'DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch',
-															'$$$event_search': 'search',
+		                                                     'slCreditCard': '0',
+		                                                     'searchPeriod': '0',
+		                                                     'postingDate': fromdate,
+		                                                     'toPostingDate': till,
+		                                                     '$$event_search': 'Umsätze+anzeigen',
+		                                                     '$part': 'DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch',
+		                                                     '$$$event_search': 'search',
 		}), headers={'Referer':urllib.quote_plus(referer)})
-		throwaway= ''.join(urllib2.urlopen(request).readlines())
+		data= ''.join(urllib2.urlopen(request).readlines())
 
+		# find card index
+		if not card=='':
+		    	cc_index= self.get_cc_index(card, data)
+		    	# again retrieve data for correct card
+		    	request=urllib2.Request(url, data= urllib.urlencode({
+		    	                                                     'slCreditCard': cc_index,
+		    	                                                     'searchPeriod': '0',
+		    	                                                     'postingDate': fromdate,
+		    	                                                     'toPostingDate': till,
+		    	                                                     '$$event_search': 'Umsätze+anzeigen',
+		    	                                                     '$part': 'DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch',
+		    	                                                     '$$$event_search': 'search',
+		    	}), headers={'Referer':urllib.quote_plus(url+"?$part=DkbTransactionBanking.content.banking.FinancialStatus.FinancialStatus&$event=paymentTransaction&row=1&table=cashTable")})
+		    	throwaway= ''.join(urllib2.urlopen(request).readlines())
+
+
+
+		#CSV abrufen
 		request=urllib2.Request(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=csvExport',
-			headers={'Referer':urllib.quote_plus(url)})
+		                        headers={'Referer':urllib.quote_plus(url)})
 		antwort= urllib2.urlopen(request).read()
 		log('Daten empfangen. Länge: %s'%len(antwort))
 		return antwort
@@ -124,6 +154,7 @@ class NewParser:
 		return result
 
 CC_NAME= 'VISA'
+CC_NUMBER= ''
 LOGIN_ACCOUNT=''
 LOGIN_PASSWORD=''
 PARSER= NewParser()
@@ -138,41 +169,42 @@ def guessCategories(f):
 			return g[2]
 
 def render_qif(cc_data):
-    cc_qif=[]
-    cc_qif.append('!Account')
-    cc_qif.append('N'+CC_NAME)
-    cc_qif.append('^')
-    cc_qif.append('!Type:Bank')
-    log('Für Ausgabe vorbereiten:')
-    for f in cc_data:
-    	log(str(f))
-    	if PARSER.TAG in f.keys():
-    		f[PARSER.BETRAG]= float(f[PARSER.BETRAG].replace('.','').replace(',','.'))
-    		if PARSER.MINUS_CHAR in f[PARSER.PLUSMINUS]:
-    			f[PARSER.BETRAG]= -f[PARSER.BETRAG]
-    		f[PARSER.BETRAG]=str(f[PARSER.BETRAG])
-    		datum=f[PARSER.DATUM].split('.')
-    		cc_qif.append('D'+datum[1]+'/'+datum[0]+'/'+datum[2])
-    		cc_qif.append('T'+f[PARSER.BETRAG])
-    		if PARSER.ZWECK+"1" in f:
-	    		for n in range(1,8):
-	    			if f[PARSER.ZWECK+str(n)].strip():
-	    				cc_qif.append('M'+f[PARSER.ZWECK+str(n)])
-	    	else:
-	    		cc_qif.append('M'+f[PARSER.ZWECK])
-    		c= guessCategories(f)
-    		if c:
-    			cc_qif.append('L'+c)
-    		cc_qif.append('^')
-    return u'\n'.join(cc_qif)
+	cc_qif=[]
+	cc_qif.append('!Account')
+	cc_qif.append('N'+CC_NAME)
+	cc_qif.append('^')
+	cc_qif.append('!Type:Bank')
+	log('Für Ausgabe vorbereiten:')
+	for f in cc_data:
+		log(str(f))
+		if PARSER.TAG in f.keys():
+			f[PARSER.BETRAG]= float(f[PARSER.BETRAG].replace('.','').replace(',','.'))
+			if PARSER.MINUS_CHAR in f[PARSER.PLUSMINUS]:
+				f[PARSER.BETRAG]= -f[PARSER.BETRAG]
+			f[PARSER.BETRAG]=str(f[PARSER.BETRAG])
+			datum=f[PARSER.DATUM].split('.')
+			cc_qif.append('D'+datum[1]+'/'+datum[0]+'/'+datum[2])
+			cc_qif.append('T'+f[PARSER.BETRAG])
+			if PARSER.ZWECK+"1" in f:
+				for n in range(1,8):
+					if f[PARSER.ZWECK+str(n)].strip():
+						cc_qif.append('M'+f[PARSER.ZWECK+str(n)])
+			else:
+				cc_qif.append('M'+f[PARSER.ZWECK])
+			c= guessCategories(f)
+			if c:
+				cc_qif.append('L'+c)
+			cc_qif.append('^')
+	return u'\n'.join(cc_qif)
 			
 class Usage(Exception):
-    def __init__(self, msg):
-        self.msg = msg
+	def __init__(self, msg):
+		self.msg = msg
 
 def main(argv=None):
 	account=LOGIN_ACCOUNT
 	password= LOGIN_PASSWORD
+	card_no= CC_NUMBER
 	fromdate=''
 	till=datetime.now().strftime('%d.%m.%Y')
 	outfile= sys.stdout
@@ -181,7 +213,7 @@ def main(argv=None):
 		argv = sys.argv
 	try:
 		try:
-			opts, args = getopt.getopt(argv[1:], "ha:p:f:t:o:v", ['help','account=','password=','from=','till=','outfile=','verbose'])
+			opts, args = getopt.getopt(argv[1:], "ha:c:p:f:t:o:v", ['help','account=','card=','password=','from=','till=','outfile=','verbose'])
 		except getopt.error, msg:
 			raise Usage(msg)
 		for o, a in opts:
@@ -190,6 +222,8 @@ def main(argv=None):
 				return 0
 			if o in ('-a','--account'):
 				account= a
+			if o in ('-c','--card'):
+				card_no= a
 			if o in ('-p','--password'):
 				password= a
 			if o in ('-f','--from'):
@@ -213,16 +247,16 @@ def main(argv=None):
 			except KeyboardInterrupt:
 				raise Usage('Sie müssen ein Passwort eingeben!')
 			
-		cc_csv = PARSER.get_cc_csv(account, password, fromdate, till).decode('iso-8859-15')
+		cc_csv = PARSER.get_cc_csv(account, card_no, password, fromdate, till)
 		cc_data = PARSER.parse_csv(cc_csv)
 
 		print >>outfile, render_qif(cc_data).encode('utf-8')
 	 	
 	except Usage, err:
-	    print >>sys.stderr, __doc__
-	    print >>sys.stderr, err.msg
-	    return 2
+		print >>sys.stderr, __doc__
+		print >>sys.stderr, err.msg
+		return 2
 	
 if __name__ == '__main__':
-    sys.exit(main())
+	sys.exit(main())
 
