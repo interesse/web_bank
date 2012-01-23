@@ -11,6 +11,14 @@ Geschrieben 2007 von Jens Herrmann <jens.herrmann@qoli.de> http://qoli.de
 Benutzung des Programms ohne Gewähr. Speichern Sie nicht ihr Passwort
 in der Kommandozeilen-History!
 
+7.9.2008: Anstelle von xml.xpath, das von Ubuntu 8.04 nicht mehr unterstützt
+wird, wird jetzt lxml.etree benutzt.
+
+25.10.2008: Kleiner Fix wegen einer HTML-Änderung der DKB (table wird nicht mehr 
+gebraucht), dafür wird jetzt exportiertes CSV ausgewertet, das nicht auf eine 
+Seite Ausgabe beschränkt ist. Da kein HTML mehr geparsed wird, entfällt auch die
+Abhängigkeit zu tidy und xpath.
+
 Benutzung: web_bank.py [OPTIONEN]
 
  -a, --account=ACCOUNT      Kontonummer des Hauptkontos. Angabe notwendig
@@ -29,9 +37,6 @@ import sys, getopt
 from datetime import datetime
 from getpass import getpass
 import urllib2, urllib, re
-import tidy
-from xml.dom import minidom
-from xml import xpath
 
 def group(lst, n):
     return zip(*[lst[i::n] for i in range(n)])
@@ -51,7 +56,7 @@ class NewParser:
 	MINUS_CHAR='S'
 	DATUM = 'frmBelegdatum'
 
-	def get_cc_html(self, account, password, fromdate, till):
+	def get_cc_csv(self, account, password, fromdate, till):
 	    log('Hole sessionID und Token...')
 	    # retrieve sessionid and token
 	    url= self.URL+"?$javascript=disabled"
@@ -72,12 +77,6 @@ class NewParser:
 	    }))
 	    throwaway=urllib2.urlopen(request).read()
 
-	    # Call page for chosing data
-	    log('Hole Table...')
-	    throwaway=urllib.urlopen(url+'?$part=DkbTransactionBanking.index.menu&treeAction=selectNode&node=2.1&tree=menu').read()
-	    table= re.findall('<input type="hidden" name="table" value="([^"]*)"',throwaway)[0]
-	    log('Table: %s'%table)
-
 		# retrieve data
 	    request=urllib2.Request(url, data= urllib.urlencode({
 															'slCreditCard': '0',
@@ -85,34 +84,29 @@ class NewParser:
 															'postingDate': fromdate,
 															'toPostingDate': till,
 															'$$event_search': 'Umsätze+anzeigen',
-															'table': table,
 															'$part': 'DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch',
-															'$$$Sevent_search': 'search',
+															'$$$event_search': 'search',
 	    }), headers={'Referer':urllib.quote_plus(url+"?$part=DkbTransactionBanking.content.banking.FinancialStatus.FinancialStatus&$event=paymentTransaction&row=1&table=cashTable")})
 	    
-	    antwort= ''.join(urllib2.urlopen(request).readlines())
+	    throwaway= ''.join(urllib2.urlopen(request).readlines())
+
+	    #CSV abrufen
+	    antwort= urllib.urlopen(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=csvExport').read()
 	    log('Daten empfangen. Länge: %s'%len(antwort))
 	    return antwort
 	   
-	def parse_html(self, cc_html):
-		options = dict(output_xhtml=1,add_xml_decl=1,indent=0,tidy_mark=0)
-		outstr= tidy.parseString(cc_html, **options)
-		outstr= str(outstr).replace("&nbsp;"," ")
-		doc= minidom.parseString(outstr)
-		n=xpath.Evaluate('//td[@headers]//text()',doc.documentElement)
-		groups= group([node.data.strip() for node in n],11)
+	def parse_csv(self, cc_csv):
 		result=[]
-		log('Daten enthalten %s Einträge'%len(groups))
-		for g in groups:
-			act={}
-			act[self.ZWECK]=g[3].replace("\n"," ")
-			act[self.TAG]=g[1]
-			act[self.DATUM]=g[2]
-			act[self.PLUSMINUS]=g[5][-1]
-			act[self.BETRAG]=g[5].replace("\n"," ").split(" ")[0]
-			result.append(act)
-			act=None
-		log('%s Einträge verarbeitet'%len(result))
+		for line in cc_csv.split('\n')[8:]: # Liste beginnt in Zeile 9 des CSV
+			g= line.split(';')
+			if len(g)==7: #Jede Zeile hat 7 Elemente
+				act={}
+				act[self.ZWECK]=g[3][1:-1]
+				act[self.TAG]=g[1][1:-1]
+				act[self.DATUM]=g[2][1:-1]
+				act[self.PLUSMINUS]=''
+				act[self.BETRAG]=g[4][1:-1]
+				result.append(act)
 		return result
 
 CC_NAME= 'VISA'
@@ -205,8 +199,8 @@ def main(argv=None):
 			except KeyboardInterrupt:
 				raise Usage('Sie müssen ein Passwort eingeben!')
 			
-		cc_html = PARSER.get_cc_html(account, password, fromdate, till)
-		cc_data = PARSER.parse_html(cc_html)
+		cc_csv = PARSER.get_cc_csv(account, password, fromdate, till)
+		cc_data = PARSER.parse_csv(cc_csv)
 
 		print >>outfile, render_qif(cc_data).encode('utf-8')
 	 	
