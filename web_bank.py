@@ -19,6 +19,8 @@ gebraucht), dafür wird jetzt exportiertes CSV ausgewertet, das nicht auf eine
 Seite Ausgabe beschränkt ist. Da kein HTML mehr geparsed wird, entfällt auch die
 Abhängigkeit zu tidy und xpath.
 
+23.11.2011: Fix des Session-Handlings durch eine Änderung der DKB
+
 Benutzung: web_bank.py [OPTIONEN]
 
  -a, --account=ACCOUNT      Kontonummer des Hauptkontos. Angabe notwendig
@@ -48,7 +50,7 @@ def log(msg):
     
 # Parser for new style banking pages
 class NewParser:
-	URL = "https://banking.dkb.de/dkb/-"
+	URL = "https://banking.dkb.de"
 	BETRAG = 'frmBuchungsbetrag'
 	ZWECK = 'frmVerwendungszweck'
 	TAG = 'frmBuchungstag'
@@ -57,16 +59,17 @@ class NewParser:
 	DATUM = 'frmBelegdatum'
 
 	def get_cc_csv(self, account, password, fromdate, till):
-	    log('Hole sessionID und Token...')
-	    # retrieve sessionid and token
-	    url= self.URL+"?$javascript=disabled"
-	    page= urllib.urlopen(url,).read()
-	    session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
-	    token= re.findall('<input type="hidden" name="token" value="(.*)" id=',page)[0]
-	    log('SessionID: %s Token: %s'%(session,token))
-	    # login
-	    url= self.URL+session
-	    request=urllib2.Request(url, data= urllib.urlencode({
+		log('Hole sessionID und Token...')
+		# retrieve sessionid and token
+		url= self.URL+"/dkb/-?$javascript=disabled"
+		page= urllib.urlopen(url,).read()
+		session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
+		token= re.findall('<input type="hidden" name="token" value="(.*)" id=',page)[0]
+		log('SessionID: %s Token: %s'%(session,token))
+		# login
+		url= self.URL+'/dkb/-'+session
+		log('URL: '+url)
+		request=urllib2.Request(url, data= urllib.urlencode({
 															'$$event_login.x': '0',
 															'$$event_login.y': '0',
 															'token': token,
@@ -74,11 +77,22 @@ class NewParser:
 															'j_password': password,
 															'$part': 'Welcome.login',
 															'$$$event_login': 'login',
-	    }))
-	    throwaway=urllib2.urlopen(request).read()
+		}))
+		page=urllib2.urlopen(request).read()
+
+		# new sessionid after login
+		session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
+		referer = url		
+		url= self.URL+'/dkb/-'+session
+
+		# init search
+		request=urllib2.Request(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=init',
+			headers={'Referer':urllib.quote_plus(referer)})
+		throwaway=urllib2.urlopen(request).read()
+		referer = url
 
 		# retrieve data
-	    request=urllib2.Request(url, data= urllib.urlencode({
+		request=urllib2.Request(url, data= urllib.urlencode({
 															'slCreditCard': '0',
 															'searchPeriod': '0',
 															'postingDate': fromdate,
@@ -86,14 +100,14 @@ class NewParser:
 															'$$event_search': 'Umsätze+anzeigen',
 															'$part': 'DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch',
 															'$$$event_search': 'search',
-	    }), headers={'Referer':urllib.quote_plus(url+"?$part=DkbTransactionBanking.content.banking.FinancialStatus.FinancialStatus&$event=paymentTransaction&row=1&table=cashTable")})
-	    
-	    throwaway= ''.join(urllib2.urlopen(request).readlines())
+		}), headers={'Referer':urllib.quote_plus(referer)})
+		throwaway= ''.join(urllib2.urlopen(request).readlines())
 
-	    #CSV abrufen
-	    antwort= urllib.urlopen(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=csvExport').read()
-	    log('Daten empfangen. Länge: %s'%len(antwort))
-	    return antwort
+		request=urllib2.Request(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=csvExport',
+			headers={'Referer':urllib.quote_plus(url)})
+		antwort= urllib2.urlopen(request).read()
+		log('Daten empfangen. Länge: %s'%len(antwort))
+		return antwort
 	   
 	def parse_csv(self, cc_csv):
 		result=[]
@@ -199,7 +213,7 @@ def main(argv=None):
 			except KeyboardInterrupt:
 				raise Usage('Sie müssen ein Passwort eingeben!')
 			
-		cc_csv = PARSER.get_cc_csv(account, password, fromdate, till)
+		cc_csv = PARSER.get_cc_csv(account, password, fromdate, till).decode('iso-8859-15')
 		cc_data = PARSER.parse_csv(cc_csv)
 
 		print >>outfile, render_qif(cc_data).encode('utf-8')
