@@ -23,6 +23,9 @@ Abhängigkeit zu tidy und xpath.
 
 23.11.2011: Fix des Session-Handlings durch eine Änderung der DKB
 
+12.05.2012: Fix des Session-Handlings durch erneute Änderung der DKB (Akzeptieren von
+Cookies ist erforderlich) Danke an Robert Steffens!
+
 Benutzung: web_bank.py [OPTIONEN]
 
  -a, --account=ACCOUNT      Kontonummer des Hauptkontos. Angabe notwendig
@@ -42,7 +45,7 @@ Benutzung: web_bank.py [OPTIONEN]
 import sys, getopt
 from datetime import datetime
 from getpass import getpass
-import urllib2, urllib, re
+import urllib2, urllib, cookielib, re
 
 def group(lst, n):
 	return zip(*[lst[i::n] for i in range(n)])
@@ -75,7 +78,10 @@ class NewParser:
 		log('Hole sessionID und Token...')
 		# retrieve sessionid and token
 		url= self.URL+"/dkb/-?$javascript=disabled"
-		page= urllib.urlopen(url,).read()
+		cj = cookielib.LWPCookieJar()
+		opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
+		urllib2.install_opener(opener)
+		page= urllib2.urlopen(url,).read()
 		session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
 		token= re.findall('<input type="hidden" name="token" value="(.*)" id=',page)[0]
 		log('SessionID: %s Token: %s'%(session,token))
@@ -92,10 +98,8 @@ class NewParser:
 		}))
 		page=urllib2.urlopen(request).read()
 
-		# new sessionid after login
-		session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
 		referer = url		
-		url= self.URL+'/dkb/-'+session
+		url= self.URL+'/dkb/-'
 
 		# init search
 		request=urllib2.Request(url+'?$part=DkbTransactionBanking.content.creditcard.CreditcardTransactionSearch&$event=init',
