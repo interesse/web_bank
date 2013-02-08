@@ -82,7 +82,7 @@ class NewParser:
 		opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
 		urllib2.install_opener(opener)
 		page= urllib2.urlopen(url,).read()
-		session= re.findall(';jsessionid=.*?["\?]',page)[0][:-1]
+		session= re.findall(';dkbsessid=.*?["\?]',page)[0][:-1]
 		token= re.findall('<input type="hidden" name="token" value="(.*)" id=',page)[0]
 		log('SessionID: %s Token: %s'%(session,token))
 		# login
